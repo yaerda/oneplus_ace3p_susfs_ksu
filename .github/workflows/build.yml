@@ -1,78 +1,134 @@
 name: Build KernelSU Next + SUSFS
 
 on:
-    workflow_dispatch:
-      inputs:
-        SUSFS_VERSION:
-          description: 'SUSFS 版本'
-          default: '1.5.5'
-          required: true
+  workflow_dispatch:
+    inputs:
+      SUSFS_VERSION:
+        description: 'SUSFS fix patch 版本 (WildKernels/kernel_patches next/susfs_fix_patches/)'
+        default: 'v1.5.12'
+        required: true
 
 jobs:
-    build:
-      runs-on: ubuntu-latest
-      timeout-minutes: 330
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
 
-      steps:
-        - name: 最大化磁盘空间
-          uses: easimon/maximize-build-space@master
-          with:
-            root-reserve-mb: 8192
-            temp-reserve-mb: 2048
-            remove-dotnet: 'true'
-            remove-android: 'true'
-            remove-haskell: 'true'
-            remove-codeql: 'true'
+    steps:
+      - name: 最大化磁盘空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
 
-        - name: 安装依赖
-          run: |
-            sudo apt-get update -qq
-            sudo apt-get install -y git curl python3 python3-pip zip bc bison flex \
-              libssl-dev libelf-dev gcc g++ make cpio
-            curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
-            chmod a+x /usr/local/bin/repo
-            git config --global user.email "ci@github.com"
-            git config --global user.name "GitHub Actions"
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y git curl python3 zip bc bison flex \
+            libssl-dev libelf-dev gcc g++ make cpio
+          curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+          chmod a+x /usr/local/bin/repo
+          git config --global user.email "ci@github.com"
+          git config --global user.name "GitHub Actions"
 
-        - name: Checkout 构建脚本
-          uses: actions/checkout@v4
-          with:
-            path: scripts
+      - name: 同步内核源码
+        run: |
+          mkdir kernel && cd kernel
+          repo init \
+            -u https://github.com/OnePlusOSS/kernel_manifest.git \
+            -b refs/heads/oneplus/sm8650 \
+            -m oneplus_ace3_pro_v.xml \
+            --depth=1 --repo-rev=v2.16
+          repo sync -c -j$(nproc --all) --no-tags --fail-fast
 
-        - name: 初始化 repo 并同步内核源码
-          run: |
-            mkdir kernel && cd kernel
-            repo init \
-              -u https://github.com/OnePlusOSS/kernel_manifest.git \
-              -b refs/heads/oneplus/sm8650 \
-              -m oneplus_ace3_pro_v.xml \
-              --depth=1 --repo-rev=v2.16
-            repo sync -c -j$(nproc --all) --no-tags --fail-fast
+      - name: 设置 KernelSU Next
+        working-directory: kernel/kernel_platform
+        run: |
+          # 去除 dirty 标记
+          sed -i 's/ -dirty//g' common/scripts/setlocalversion
+          sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion
+          # 删除 ABI 保护文件
+          rm -f common/android/abi_gki_protected_exports_* || true
+          rm -f msm-kernel/android/abi_gki_protected_exports_* || true
+          # 安装 KernelSU Next
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          echo "KSU_VERSION=$(expr $(git -C KernelSU-Next rev-list --count HEAD) + 10200)" >> $GITHUB_ENV
 
-        - name: 运行 build_ksun.sh
-          working-directory: kernel
-          env:
-            SUSFS_VERSION: ${{ github.event.inputs.SUSFS_VERSION }}
-          run: |
-            sed "s/SUSFS_VERSION=\"1.5.5\"/SUSFS_VERSION=\"${SUSFS_VERSION}\"/" \
-              ../scripts/build_ksun.sh > build_ksun_ci.sh
-            chmod +x build_ksun_ci.sh
-            bash -x build_ksun_ci.sh 2>&1 | tee /tmp/build.log
-            if grep -q "FAILED" /tmp/build.log; then
-              echo "::warning::检测到补丁应用失败，请检查日志"
-            fi
+      - name: 应用 SUSFS 补丁
+        working-directory: kernel
+        env:
+          SUSFS_FIX_VERSION: ${{ github.event.inputs.SUSFS_VERSION }}
+        run: |
+          # 克隆 susfs4ksu 和 kernel_patches
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
+          git clone https://github.com/WildKernels/kernel_patches.git --depth=1
 
-        - name: 上传 AnyKernel3 zip
-          uses: actions/upload-artifact@v4
-          with:
-            name: Anykernel3-KSUN-SUSFS-OnePlus_ACE_3_Pro
-            path: kernel/Anykernel3-KSUN-SUSFS-*.zip
-            retention-days: 7
+          # 复制 SUSFS 内核文件
+          cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch kernel_platform/common/
+          cp susfs4ksu/kernel_patches/fs/susfs.c kernel_platform/common/fs/
+          cp susfs4ksu/kernel_patches/include/linux/susfs.h \
+             susfs4ksu/kernel_patches/include/linux/susfs_def.h \
+             kernel_platform/common/include/linux/
 
-        - name: 上传构建日志
-          if: always()
-          uses: actions/upload-artifact@v4
-          with:
-            name: build-log
-            path: /tmp/build.log
-            retention-days: 3
+          # 应用 SUSFS GKI 补丁
+          cd kernel_platform/common
+          patch -p1 < 50_add_susfs_in_gki-android14-6.1.patch || true
+
+          # 应用 KernelSU-Next SUSFS fix patches
+          cd ../../kernel_platform/KernelSU-Next
+          PATCHES_DIR="../../kernel_patches/next/susfs_fix_patches/${SUSFS_FIX_VERSION}"
+          if [ -d "$PATCHES_DIR" ]; then
+            for patch in "$PATCHES_DIR"/*.patch; do
+              echo "Applying: $patch"
+              patch -p1 -F 3 < "$patch" || true
+            done
+          else
+            echo "::error::找不到补丁目录: $PATCHES_DIR"
+            ls ../../kernel_patches/next/susfs_fix_patches/
+            exit 1
+          fi
+
+          # 应用 next_hooks 补丁（让 KSU-Next 使用手动 hook 模式）
+          cd ../../kernel_platform/KernelSU-Next
+          cp ../../kernel_patches/next/next_hooks.patch ./
+          patch -p1 -F 3 < next_hooks.patch || true
+
+          # 应用 hide_stuff 补丁（如果存在）
+          cd ../../kernel_platform/common
+          if [ -f "../../kernel_patches/archived/69_hide_stuff.patch" ]; then
+            patch -p1 -F 3 < ../../kernel_patches/archived/69_hide_stuff.patch || true
+          fi
+
+      - name: 编译内核
+        working-directory: kernel
+        run: |
+          ./kernel_platform/oplus/build/oplus_build_kernel.sh pineapple gki 2>&1 | tee /tmp/build.log
+
+      - name: 打包 AnyKernel3
+        working-directory: kernel
+        run: |
+          git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1
+          rm -rf AnyKernel3/.git
+          cp out/dist/Image AnyKernel3/
+          cd AnyKernel3
+          ZIPNAME="Anykernel3-KSUN-SUSFS-${KSU_VERSION}-OnePlus_ACE_3_Pro.zip"
+          zip -r "../$ZIPNAME" ./*
+          echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+
+      - name: 上传 AnyKernel3 zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anykernel3-KSUN-SUSFS-OnePlus_ACE_3_Pro
+          path: kernel/Anykernel3-KSUN-SUSFS-*.zip
+          retention-days: 7
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build.log
+          retention-days: 3
