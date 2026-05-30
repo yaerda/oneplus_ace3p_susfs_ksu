@@ -1,0 +1,78 @@
+name: Build KernelSU Next + SUSFS
+
+on:
+    workflow_dispatch:
+      inputs:
+        SUSFS_VERSION:
+          description: 'SUSFS 版本'
+          default: '1.5.5'
+          required: true
+
+jobs:
+    build:
+      runs-on: ubuntu-latest
+      timeout-minutes: 330
+
+      steps:
+        - name: 最大化磁盘空间
+          uses: easimon/maximize-build-space@master
+          with:
+            root-reserve-mb: 8192
+            temp-reserve-mb: 2048
+            remove-dotnet: 'true'
+            remove-android: 'true'
+            remove-haskell: 'true'
+            remove-codeql: 'true'
+
+        - name: 安装依赖
+          run: |
+            sudo apt-get update -qq
+            sudo apt-get install -y git curl python3 python3-pip zip bc bison flex \
+              libssl-dev libelf-dev gcc g++ make cpio
+            curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+            chmod a+x /usr/local/bin/repo
+            git config --global user.email "ci@github.com"
+            git config --global user.name "GitHub Actions"
+
+        - name: Checkout 构建脚本
+          uses: actions/checkout@v4
+          with:
+            path: scripts
+
+        - name: 初始化 repo 并同步内核源码
+          run: |
+            mkdir kernel && cd kernel
+            repo init \
+              -u https://github.com/OnePlusOSS/kernel_manifest.git \
+              -b refs/heads/oneplus/sm8650 \
+              -m oneplus_ace3_pro_v.xml \
+              --depth=1 --repo-rev=v2.16
+            repo sync -c -j$(nproc --all) --no-tags --fail-fast
+
+        - name: 运行 build_ksun.sh
+          working-directory: kernel
+          env:
+            SUSFS_VERSION: ${{ github.event.inputs.SUSFS_VERSION }}
+          run: |
+            sed "s/SUSFS_VERSION=\"1.5.5\"/SUSFS_VERSION=\"${SUSFS_VERSION}\"/" \
+              ../scripts/build_ksun.sh > build_ksun_ci.sh
+            chmod +x build_ksun_ci.sh
+            bash -x build_ksun_ci.sh 2>&1 | tee /tmp/build.log
+            if grep -q "FAILED" /tmp/build.log; then
+              echo "::warning::检测到补丁应用失败，请检查日志"
+            fi
+
+        - name: 上传 AnyKernel3 zip
+          uses: actions/upload-artifact@v4
+          with:
+            name: Anykernel3-KSUN-SUSFS-OnePlus_ACE_3_Pro
+            path: kernel/Anykernel3-KSUN-SUSFS-*.zip
+            retention-days: 7
+
+        - name: 上传构建日志
+          if: always()
+          uses: actions/upload-artifact@v4
+          with:
+            name: build-log
+            path: /tmp/build.log
+            retention-days: 3
