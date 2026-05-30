@@ -47,8 +47,14 @@ jobs:
       - name: 设置 KernelSU Next
         working-directory: kernel/kernel_platform
         run: |
+          # 去除 -dirty 标记：修改 setlocalversion 脚本
           sed -i 's/ -dirty//g' common/scripts/setlocalversion
           sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion
+          # 去除 -dirty 标记：让 git 认为工作区干净
+          git -C common update-index --assume-unchanged \
+            $(git -C common ls-files -m 2>/dev/null | head -100) 2>/dev/null || true
+          git -C msm-kernel update-index --assume-unchanged \
+            $(git -C msm-kernel ls-files -m 2>/dev/null | head -100) 2>/dev/null || true
           rm -f common/android/abi_gki_protected_exports_* || true
           rm -f msm-kernel/android/abi_gki_protected_exports_* || true
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
