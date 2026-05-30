@@ -90,13 +90,19 @@ jobs:
           patch -p1 -F 3 < 50_add_susfs_in_gki-android14-6.1.patch || true
 
           # 修复 base.c 缺失的 include（patch 的 hunk #1 经常失败）
-          if ! grep -q "linux/susfs_def.h" fs/proc/base.c; then
+          if ! grep -q "susfs_def.h" fs/proc/base.c; then
             echo "=== 手工补充 base.c 缺失的 include ==="
-            sed -i '/^#include <linux\/dma-buf.h>/a\
-\
-#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\
-#include <linux\/susfs_def.h>\
-#endif' fs/proc/base.c
+            INCLUDE_BLOCK='#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)|#include <linux/susfs_def.h>|#endif'
+            awk -v block="$INCLUDE_BLOCK" '
+              /^#include <linux\/dma-buf.h>/ {
+                print;
+                n = split(block, lines, "|");
+                for (i=1; i<=n; i++) print lines[i];
+                next
+              }
+              { print }
+            ' fs/proc/base.c > fs/proc/base.c.new
+            mv fs/proc/base.c.new fs/proc/base.c
             echo "=== 验证 ==="
             grep -A2 "susfs_def" fs/proc/base.c | head -10
           else
