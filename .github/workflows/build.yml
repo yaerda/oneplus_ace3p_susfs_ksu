@@ -139,9 +139,10 @@ jobs:
           fi
 
           grep "susfs" /tmp/build.log | head -5 || echo "未在日志中找到 susfs"
-          mkdir -p ../out/dist
-          cp out/arch/arm64/boot/Image ../out/dist/Image
-          echo "✅ Image: $(ls -lh ../out/dist/Image)"
+          # 复制到 kernel/out/dist/Image 供打包步骤使用
+          mkdir -p ../../out/dist
+          cp out/arch/arm64/boot/Image ../../out/dist/Image
+          echo "✅ Image: $(ls -lh ../../out/dist/Image)"
 
       - name: 打包 AnyKernel3
         working-directory: kernel
