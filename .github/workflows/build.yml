@@ -47,14 +47,11 @@ jobs:
       - name: 设置 KernelSU Next
         working-directory: kernel/kernel_platform
         run: |
-          # 去除 -dirty 标记：修改 setlocalversion 脚本
+          # 去除 -dirty 标记
           sed -i 's/ -dirty//g' common/scripts/setlocalversion
           sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion
-          # 去除 -dirty 标记：让 git 认为工作区干净
-          git -C common update-index --assume-unchanged \
-            $(git -C common ls-files -m 2>/dev/null | head -100) 2>/dev/null || true
-          git -C msm-kernel update-index --assume-unchanged \
-            $(git -C msm-kernel ls-files -m 2>/dev/null | head -100) 2>/dev/null || true
+          sed -i 's/${scm_version}//' common/scripts/setlocalversion
+          sed -i 's/${scm_version}//' msm-kernel/scripts/setlocalversion
           rm -f common/android/abi_gki_protected_exports_* || true
           rm -f msm-kernel/android/abi_gki_protected_exports_* || true
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
@@ -99,18 +96,18 @@ jobs:
       - name: 启用 SUSFS CONFIG
         working-directory: kernel/kernel_platform
         run: |
-          # Bazel 构建不允许直接改 gki_defconfig（savedefconfig 校验会失败）
-          # 正确方式：通过 msm-kernel vendor fragment 注入 CONFIG
-          # vendor fragment 不受 savedefconfig 校验限制
+          # 关键：删除 check_defconfig 检查，允许修改 gki_defconfig
+          sed -i 's/check_defconfig//' common/build.config.gki
 
-          FRAGMENT="msm-kernel/arch/arm64/configs/vendor/pineapple-gki_defconfig"
-          echo "=== 注入 SUSFS CONFIG 到 vendor fragment: $FRAGMENT ==="
+          # 写入 SUSFS CONFIG 到 gki_defconfig
+          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
+          echo "=== 注入 SUSFS CONFIG ==="
           for cfg in CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y CONFIG_KSU_SUSFS_TRY_UMOUNT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_SU=n; do
-            echo "$cfg" >> "$FRAGMENT"
+            echo "$cfg" >> "$DEFCONFIG"
           done
 
-          echo "=== 验证写入 ==="
-          grep "SUSFS" "$FRAGMENT"
+          echo "=== 验证 ==="
+          grep "SUSFS" "$DEFCONFIG"
 
       - name: 编译内核
         working-directory: kernel
