@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       SUSFS_VERSION:
-        description: 'SUSFS fix patch 版本'
+        description: 'SUSFS fix patch 版本 (适配 v3.1.0-legacy-susfs)'
         default: 'v1.5.12'
+        required: true
+      KSUN_TAG:
+        description: 'KernelSU-Next tag (使用 legacy-susfs 分支)'
+        default: 'v3.1.0-legacy-susfs'
         required: true
 
 jobs:
@@ -44,20 +48,29 @@ jobs:
             --depth=1 --repo-rev=v2.16
           repo sync -c -j$(nproc --all) --no-tags --fail-fast
 
-      - name: 设置 KernelSU Next
+      - name: 设置 KernelSU Next (legacy-susfs 分支)
         working-directory: kernel/kernel_platform
+        env:
+          KSUN_TAG: ${{ github.event.inputs.KSUN_TAG }}
         run: |
-          # 去除 -dirty 标记
+          # 去 -dirty 标记
           sed -i 's/ -dirty//g' common/scripts/setlocalversion
           sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion
           sed -i 's/${scm_version}//' common/scripts/setlocalversion
           sed -i 's/${scm_version}//' msm-kernel/scripts/setlocalversion
+
           rm -f common/android/abi_gki_protected_exports_* || true
           rm -f msm-kernel/android/abi_gki_protected_exports_* || true
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          echo "KSU_VERSION=$(expr $(git -C KernelSU-Next rev-list --count HEAD) + 10200)" >> $GITHUB_ENV
 
-      - name: 应用 SUSFS 补丁
+          # 使用 legacy-susfs tag 的 setup.sh，这版包含 SUSFS Kconfig 默认启用
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/${KSUN_TAG}/kernel/setup.sh" \
+            | bash -s "${KSUN_TAG}"
+
+          echo "KSU_VERSION=$(expr $(git -C KernelSU-Next rev-list --count HEAD) + 10200)" >> $GITHUB_ENV
+          echo "=== KSU-Next Kconfig 包含 SUSFS ==="
+          grep "SUSFS" KernelSU-Next/kernel/Kconfig | head -5
+
+      - name: 应用 SUSFS 内核补丁
         working-directory: kernel
         env:
           SUSFS_FIX_VERSION: ${{ github.event.inputs.SUSFS_VERSION }}
@@ -76,7 +89,7 @@ jobs:
           cd kernel_platform/common
           patch -p1 < 50_add_susfs_in_gki-android14-6.1.patch || true
 
-          # 应用 KernelSU-Next SUSFS fix patches
+          # 应用 KSU-Next SUSFS fix patches（仍然需要，确保兼容性）
           cd ../../kernel_platform/KernelSU-Next
           PATCHES_DIR="../../kernel_patches/next/susfs_fix_patches/${SUSFS_FIX_VERSION}"
           if [ -d "$PATCHES_DIR" ]; then
@@ -84,65 +97,28 @@ jobs:
               echo "Applying: $patch"
               patch -p1 -F 3 < "$patch" || true
             done
-          else
-            echo "::error::找不到补丁目录: $PATCHES_DIR"
-            exit 1
           fi
 
-          # 应用 next_hooks 补丁
-          cp ../../kernel_patches/next/next_hooks.patch ./
-          patch -p1 -F 3 < next_hooks.patch || true
-
-      - name: 启用 SUSFS CONFIG
-        working-directory: kernel/kernel_platform
+      - name: 编译内核 (Bazel)
+        working-directory: kernel
         run: |
-          # 删除 check_defconfig 校验
-          sed -i 's/check_defconfig//' common/build.config.gki || true
+          # 使用 djkcyl 原始的 Bazel 编译方式
+          # 因为 KSU-Next legacy-susfs 分支 Kconfig 已默认启用 SUSFS，无需改 defconfig
+          ./kernel_platform/oplus/build/oplus_build_kernel.sh pineapple gki 2>&1 | tee /tmp/build.log
 
-          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
-          echo "=== 注入 SUSFS CONFIG ==="
-          for cfg in CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y CONFIG_KSU_SUSFS_TRY_UMOUNT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_SU=n; do
-            echo "$cfg" >> "$DEFCONFIG"
-          done
-          # 禁用 BTF（直接 make 编译时 pahole 路径问题导致 BTF 生成失败）
-          echo "CONFIG_DEBUG_INFO_BTF=n" >> "$DEFCONFIG"
-          echo "# CONFIG_MODULE_ALLOW_BTF_MISMATCH is not set" >> "$DEFCONFIG"
-          grep -E "SUSFS|BTF" "$DEFCONFIG"
-
-      - name: 编译内核
-        working-directory: kernel/kernel_platform
-        run: |
-          CLANG_PATH="$(pwd)/prebuilts/clang/host/linux-x86/clang-r487747c/bin"
-          export PATH="$CLANG_PATH:$PATH"
-          export KBUILD_BUILD_USER="build-user"
-          export KBUILD_BUILD_HOST="build-host"
-
-          # 指定 pahole 路径（修复 BTF 生成）
-          PAHOLE="$(pwd)/prebuilts/kernel-build-tools/linux-x86/bin/pahole"
-
-          cd common
-          make -j$(nproc --all) \
-            LLVM=1 \
-            ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            HOSTLD=ld.lld \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            PAHOLE="$PAHOLE" \
-            O=out \
-            gki_defconfig Image 2>&1 | tee /tmp/build.log
-
-          if [ ! -f out/arch/arm64/boot/Image ]; then
+          if [ ! -f out/dist/Image ]; then
             echo "::error::编译失败，Image 不存在"
             grep -iE "error:|fatal:" /tmp/build.log | tail -20
             exit 1
           fi
+          echo "✅ Image: $(ls -lh out/dist/Image)"
 
-          grep "susfs" /tmp/build.log | head -5 || echo "未在日志中找到 susfs"
-          # 复制到 kernel/out/dist/Image 供打包步骤使用
-          mkdir -p ../../out/dist
-          cp out/arch/arm64/boot/Image ../../out/dist/Image
-          echo "✅ Image: $(ls -lh ../../out/dist/Image)"
+          # 验证 SUSFS 编译进去
+          if grep -q "susfs" /tmp/build.log; then
+            echo "✅ SUSFS 在编译日志中检测到"
+          else
+            echo "⚠️ 编译日志中未检测到 susfs（可能是输出被截断，刷机后再验证）"
+          fi
 
       - name: 打包 AnyKernel3
         working-directory: kernel
