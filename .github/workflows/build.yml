@@ -104,16 +104,21 @@ jobs:
           for cfg in CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y CONFIG_KSU_SUSFS_TRY_UMOUNT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_SU=n; do
             echo "$cfg" >> "$DEFCONFIG"
           done
-          grep "SUSFS" "$DEFCONFIG"
+          # 禁用 BTF（直接 make 编译时 pahole 路径问题导致 BTF 生成失败）
+          echo "CONFIG_DEBUG_INFO_BTF=n" >> "$DEFCONFIG"
+          echo "# CONFIG_MODULE_ALLOW_BTF_MISMATCH is not set" >> "$DEFCONFIG"
+          grep -E "SUSFS|BTF" "$DEFCONFIG"
 
       - name: 编译内核
         working-directory: kernel/kernel_platform
         run: |
-          # 使用 make 直接编译，完全绕开 Bazel，确保 defconfig 修改生效
           CLANG_PATH="$(pwd)/prebuilts/clang/host/linux-x86/clang-r487747c/bin"
           export PATH="$CLANG_PATH:$PATH"
           export KBUILD_BUILD_USER="build-user"
           export KBUILD_BUILD_HOST="build-host"
+
+          # 指定 pahole 路径（修复 BTF 生成）
+          PAHOLE="$(pwd)/prebuilts/kernel-build-tools/linux-x86/bin/pahole"
 
           cd common
           make -j$(nproc --all) \
@@ -123,20 +128,17 @@ jobs:
             LD=ld.lld \
             HOSTLD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            PAHOLE="$PAHOLE" \
             O=out \
-            gki_defconfig all 2>&1 | tee /tmp/build.log
+            gki_defconfig Image 2>&1 | tee /tmp/build.log
 
-          # 验证 Image 产生
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "::error::编译失败，Image 不存在"
-            grep -E "error:" /tmp/build.log | tail -20
+            grep -iE "error:|fatal:" /tmp/build.log | tail -20
             exit 1
           fi
 
-          # 确认 SUSFS 编译进去了
-          grep "susfs" /tmp/build.log | head -5 || echo "未找到 susfs 编译记录"
-
-          # 复制到 out/dist 供打包步骤使用
+          grep "susfs" /tmp/build.log | head -5 || echo "未在日志中找到 susfs"
           mkdir -p ../out/dist
           cp out/arch/arm64/boot/Image ../out/dist/Image
           echo "✅ Image: $(ls -lh ../out/dist/Image)"
