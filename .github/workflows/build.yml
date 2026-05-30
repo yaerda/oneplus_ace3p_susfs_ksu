@@ -96,31 +96,50 @@ jobs:
       - name: 启用 SUSFS CONFIG
         working-directory: kernel/kernel_platform
         run: |
-          # 关键：删除 check_defconfig 检查，允许修改 gki_defconfig
-          sed -i 's/check_defconfig//' common/build.config.gki
+          # 删除 check_defconfig 校验
+          sed -i 's/check_defconfig//' common/build.config.gki || true
 
-          # 写入 SUSFS CONFIG 到 gki_defconfig
           DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
           echo "=== 注入 SUSFS CONFIG ==="
           for cfg in CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y CONFIG_KSU_SUSFS_TRY_UMOUNT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_SU=n; do
             echo "$cfg" >> "$DEFCONFIG"
           done
-
-          echo "=== 验证 ==="
           grep "SUSFS" "$DEFCONFIG"
 
       - name: 编译内核
-        working-directory: kernel
+        working-directory: kernel/kernel_platform
         run: |
-          ./kernel_platform/oplus/build/oplus_build_kernel.sh pineapple gki 2>&1 | tee /tmp/build.log
-          if [ ! -f out/dist/Image ]; then
-            echo "::error::编译失败，out/dist/Image 不存在"
-            grep -E "^.*error:.*$" /tmp/build.log | tail -20
+          # 使用 make 直接编译，完全绕开 Bazel，确保 defconfig 修改生效
+          CLANG_PATH="$(pwd)/prebuilts/clang/host/linux-x86/clang-r487747c/bin"
+          export PATH="$CLANG_PATH:$PATH"
+          export KBUILD_BUILD_USER="build-user"
+          export KBUILD_BUILD_HOST="build-host"
+
+          cd common
+          make -j$(nproc --all) \
+            LLVM=1 \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            HOSTLD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out \
+            gki_defconfig all 2>&1 | tee /tmp/build.log
+
+          # 验证 Image 产生
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "::error::编译失败，Image 不存在"
+            grep -E "error:" /tmp/build.log | tail -20
             exit 1
           fi
-          echo "✅ Image 编译成功: $(ls -lh out/dist/Image)"
-          # 验证 SUSFS 编译进去了
-          grep -c "susfs" /tmp/build.log && echo "✅ SUSFS 出现在编译日志" || echo "⚠️ SUSFS 未出现在编译日志"
+
+          # 确认 SUSFS 编译进去了
+          grep "susfs" /tmp/build.log | head -5 || echo "未找到 susfs 编译记录"
+
+          # 复制到 out/dist 供打包步骤使用
+          mkdir -p ../out/dist
+          cp out/arch/arm64/boot/Image ../out/dist/Image
+          echo "✅ Image: $(ls -lh ../out/dist/Image)"
 
       - name: 打包 AnyKernel3
         working-directory: kernel
