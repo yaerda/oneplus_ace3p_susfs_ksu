@@ -99,24 +99,18 @@ jobs:
       - name: 启用 SUSFS CONFIG
         working-directory: kernel/kernel_platform
         run: |
-          # 找到 GKI common defconfig 并强制启用 SUSFS 所有选项
-          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
-          
-          echo "=== 添加 SUSFS CONFIG 到 $DEFCONFIG ==="
+          # Bazel 构建不允许直接改 gki_defconfig（savedefconfig 校验会失败）
+          # 正确方式：通过 msm-kernel vendor fragment 注入 CONFIG
+          # vendor fragment 不受 savedefconfig 校验限制
+
+          FRAGMENT="msm-kernel/arch/arm64/configs/vendor/pineapple-gki_defconfig"
+          echo "=== 注入 SUSFS CONFIG 到 vendor fragment: $FRAGMENT ==="
           for cfg in CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y CONFIG_KSU_SUSFS_TRY_UMOUNT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_SU=n; do
-            echo "$cfg" >> "$DEFCONFIG"
+            echo "$cfg" >> "$FRAGMENT"
           done
 
-          echo "=== 同时写入 msm-kernel defconfig ==="
-          MSMD="msm-kernel/arch/arm64/configs/vendor/pineapple-gki_defconfig"
-          if [ -f "$MSMD" ]; then
-            for cfg in CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y CONFIG_KSU_SUSFS_TRY_UMOUNT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SUS_SU=n; do
-              echo "$cfg" >> "$MSMD"
-            done
-          fi
-
           echo "=== 验证写入 ==="
-          grep "SUSFS" "$DEFCONFIG" | head -10
+          grep "SUSFS" "$FRAGMENT"
 
       - name: 编译内核
         working-directory: kernel
