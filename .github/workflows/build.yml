@@ -85,11 +85,29 @@ jobs:
              susfs4ksu/kernel_patches/include/linux/susfs_def.h \
              kernel_platform/common/include/linux/
 
-          # 应用 SUSFS GKI 主补丁
+          # 应用 SUSFS GKI 主补丁（用 -F 3 允许模糊匹配，但 base.c 还需手工修复）
           cd kernel_platform/common
-          patch -p1 < 50_add_susfs_in_gki-android14-6.1.patch || true
+          patch -p1 -F 3 < 50_add_susfs_in_gki-android14-6.1.patch || true
 
-          # 应用 KSU-Next SUSFS fix patches（仍然需要，确保兼容性）
+          # 修复 base.c 缺失的 include（patch 的 hunk #1 经常失败）
+          if ! grep -q "linux/susfs_def.h" fs/proc/base.c; then
+            echo "=== 手工补充 base.c 缺失的 include ==="
+            sed -i '/^#include <linux\/dma-buf.h>/a\
+\
+#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\
+#include <linux\/susfs_def.h>\
+#endif' fs/proc/base.c
+            echo "=== 验证 ==="
+            grep -A2 "susfs_def" fs/proc/base.c | head -10
+          else
+            echo "✅ base.c 已包含 susfs_def.h"
+          fi
+
+          # 检查所有 .rej 文件
+          echo "=== Patch rejects 检查 ==="
+          find . -name "*.rej" 2>/dev/null | head -20
+
+          # 应用 KSU-Next SUSFS fix patches
           cd ../../kernel_platform/KernelSU-Next
           PATCHES_DIR="../../kernel_patches/next/susfs_fix_patches/${SUSFS_FIX_VERSION}"
           if [ -d "$PATCHES_DIR" ]; then
