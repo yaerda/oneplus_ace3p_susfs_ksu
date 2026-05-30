@@ -103,8 +103,7 @@ jobs:
           DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
           
           echo "=== 添加 SUSFS CONFIG 到 $DEFCONFIG ==="
-          cat >> "$DEFCONFIG" << 'EOF'
-CONFIG_KSU_SUSFS=y
+          SUSFS_CONFIGS="CONFIG_KSU_SUSFS=y
 CONFIG_KSU_SUSFS_SUS_PATH=y
 CONFIG_KSU_SUSFS_SUS_MOUNT=y
 CONFIG_KSU_SUSFS_SUS_KSTAT=y
@@ -113,24 +112,13 @@ CONFIG_KSU_SUSFS_TRY_UMOUNT=y
 CONFIG_KSU_SUSFS_SPOOF_UNAME=y
 CONFIG_KSU_SUSFS_ENABLE_LOG=y
 CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_KSU_SUSFS_SUS_SU=n
-EOF
+CONFIG_KSU_SUSFS_SUS_SU=n"
+          echo "$SUSFS_CONFIGS" >> "$DEFCONFIG"
 
           echo "=== 同时写入 msm-kernel defconfig ==="
           MSMD="msm-kernel/arch/arm64/configs/vendor/pineapple-gki_defconfig"
           if [ -f "$MSMD" ]; then
-            cat >> "$MSMD" << 'EOF'
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_KSU_SUSFS_SUS_SU=n
-EOF
+            echo "$SUSFS_CONFIGS" >> "$MSMD"
           fi
 
           echo "=== 验证写入 ==="
