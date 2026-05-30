@@ -47,13 +47,10 @@ jobs:
       - name: 设置 KernelSU Next
         working-directory: kernel/kernel_platform
         run: |
-          # 去除 dirty 标记
           sed -i 's/ -dirty//g' common/scripts/setlocalversion
           sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion
-          # 删除 ABI 保护文件
           rm -f common/android/abi_gki_protected_exports_* || true
           rm -f msm-kernel/android/abi_gki_protected_exports_* || true
-          # 安装 KernelSU Next
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           echo "KSU_VERSION=$(expr $(git -C KernelSU-Next rev-list --count HEAD) + 10200)" >> $GITHUB_ENV
 
@@ -62,7 +59,6 @@ jobs:
         env:
           SUSFS_FIX_VERSION: ${{ github.event.inputs.SUSFS_VERSION }}
         run: |
-          # 克隆 susfs4ksu 和 kernel_patches
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-6.1 --depth=1
           git clone https://github.com/WildKernels/kernel_patches.git --depth=1
 
@@ -73,7 +69,7 @@ jobs:
              susfs4ksu/kernel_patches/include/linux/susfs_def.h \
              kernel_platform/common/include/linux/
 
-          # 应用 SUSFS GKI 补丁
+          # 应用 SUSFS GKI 主补丁
           cd kernel_platform/common
           patch -p1 < 50_add_susfs_in_gki-android14-6.1.patch || true
 
@@ -91,21 +87,21 @@ jobs:
             exit 1
           fi
 
-          # 应用 next_hooks 补丁（让 KSU-Next 使用手动 hook 模式）
-          cd ../../kernel_platform/KernelSU-Next
+          # 应用 next_hooks 补丁
           cp ../../kernel_patches/next/next_hooks.patch ./
           patch -p1 -F 3 < next_hooks.patch || true
-
-          # 应用 hide_stuff 补丁（如果存在）
-          cd ../../kernel_platform/common
-          if [ -f "../../kernel_patches/archived/69_hide_stuff.patch" ]; then
-            patch -p1 -F 3 < ../../kernel_patches/archived/69_hide_stuff.patch || true
-          fi
 
       - name: 编译内核
         working-directory: kernel
         run: |
           ./kernel_platform/oplus/build/oplus_build_kernel.sh pineapple gki 2>&1 | tee /tmp/build.log
+          # 检查 Image 是否产生
+          if [ ! -f out/dist/Image ]; then
+            echo "::error::编译失败，out/dist/Image 不存在，检查日志"
+            grep -E "error:|Error" /tmp/build.log | tail -20
+            exit 1
+          fi
+          echo "✅ Image 编译成功: $(ls -lh out/dist/Image)"
 
       - name: 打包 AnyKernel3
         working-directory: kernel
@@ -113,10 +109,11 @@ jobs:
           git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1
           rm -rf AnyKernel3/.git
           cp out/dist/Image AnyKernel3/
-          cd AnyKernel3
           ZIPNAME="Anykernel3-KSUN-SUSFS-${KSU_VERSION}-OnePlus_ACE_3_Pro.zip"
+          cd AnyKernel3
           zip -r "../$ZIPNAME" ./*
           echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+          echo "✅ 打包完成: $ZIPNAME"
 
       - name: 上传 AnyKernel3 zip
         uses: actions/upload-artifact@v4
