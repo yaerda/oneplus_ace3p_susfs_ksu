@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       SUSFS_VERSION:
-        description: 'SUSFS fix patch 版本 (WildKernels/kernel_patches next/susfs_fix_patches/)'
+        description: 'SUSFS fix patch 版本'
         default: 'v1.5.12'
         required: true
 
@@ -83,7 +83,6 @@ jobs:
             done
           else
             echo "::error::找不到补丁目录: $PATCHES_DIR"
-            ls ../../kernel_patches/next/susfs_fix_patches/
             exit 1
           fi
 
@@ -91,17 +90,58 @@ jobs:
           cp ../../kernel_patches/next/next_hooks.patch ./
           patch -p1 -F 3 < next_hooks.patch || true
 
+      - name: 启用 SUSFS CONFIG
+        working-directory: kernel/kernel_platform
+        run: |
+          # 找到 GKI common defconfig 并强制启用 SUSFS 所有选项
+          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
+          
+          echo "=== 添加 SUSFS CONFIG 到 $DEFCONFIG ==="
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_SU=n
+          EOF
+          
+          echo "=== 同时写入 msm-kernel defconfig ==="
+          MSMD="msm-kernel/arch/arm64/configs/vendor/pineapple-gki_defconfig"
+          if [ -f "$MSMD" ]; then
+            cat >> "$MSMD" << 'EOF'
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_SU=n
+          EOF
+          fi
+
+          echo "=== 验证写入 ==="
+          grep "SUSFS" "$DEFCONFIG" | head -10
+
       - name: 编译内核
         working-directory: kernel
         run: |
           ./kernel_platform/oplus/build/oplus_build_kernel.sh pineapple gki 2>&1 | tee /tmp/build.log
-          # 检查 Image 是否产生
           if [ ! -f out/dist/Image ]; then
-            echo "::error::编译失败，out/dist/Image 不存在，检查日志"
-            grep -E "error:|Error" /tmp/build.log | tail -20
+            echo "::error::编译失败，out/dist/Image 不存在"
+            grep -E "^.*error:.*$" /tmp/build.log | tail -20
             exit 1
           fi
           echo "✅ Image 编译成功: $(ls -lh out/dist/Image)"
+          # 验证 SUSFS 编译进去了
+          grep -c "susfs" /tmp/build.log && echo "✅ SUSFS 出现在编译日志" || echo "⚠️ SUSFS 未出现在编译日志"
 
       - name: 打包 AnyKernel3
         working-directory: kernel
@@ -113,7 +153,6 @@ jobs:
           cd AnyKernel3
           zip -r "../$ZIPNAME" ./*
           echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
-          echo "✅ 打包完成: $ZIPNAME"
 
       - name: 上传 AnyKernel3 zip
         uses: actions/upload-artifact@v4
